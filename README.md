@@ -51,7 +51,7 @@ The HealthOmics private workflow pipeline automates the process of compressing a
 
 ### Prerequisites
 1. A GitHub repository for your workflows.
-2. To trigger the Workflow Containers Dependencies Pipeline, you must have a file named `container-requirements.txt` that contains the list of container image URLs required by your HealthOmics private workflow. You may refer to the [sample `container-requirements.txt` file](/sample-workflow/container-requirements.txt).
+2. To trigger the Workflow Containers Dependencies Pipeline, you must have a file named `container-requirements.txt` that contains the list of container image URLs required by your HealthOmics private workflow. 
 
 Follow these steps to implement in your environment:
 
