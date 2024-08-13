@@ -1,0 +1,1121 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ""
+Metadata:
+  License:
+    Description: >
+      Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+      SPDX-License-Identifier: MIT-0
+
+      Permission is hereby granted, free of charge, to any person obtaisning a copy of this
+      software and associated documentation files (the "Software"), to deal in the Software
+      without restriction, including without limitation the rights to use, copy, modify,
+      merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+      permit persons to whom the Software is furnished to do so.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+      INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+      PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+      HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+      OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+      SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Parameters:
+  HealthOmicsWorkflowName:
+    Type: String
+    Description: Enter the name of the private workflow name for HealthOmics
+    Default: sample-workflow
+  RepoName:
+    Type: String
+    Description: Enter the name of the GitHub repository
+  RepoBranchName:
+    Type: String
+    Description: Enter the name of the GitHub repository
+    Default: main
+  NotificationEmailAddresses:
+    Type: String
+    Description: Enter comma-delimited string of email addresses to subscribe.
+  WorkflowFileName:
+    Type: String
+    Description: Enter the workflow file name. This is to trigger the HealthOmics Private Workflow pipeline.
+  WorkflowParameterFileName:
+    Type: String
+    Description: Enter the workflow parameter file name. This is to trigger the HealthOmics Private Workflow pipeline.
+    Default: parameter-template.json
+  LambdaFunctionPythonVersion:
+    Type: String
+    Default: python3.12
+    AllowedValues:
+      - python3.12
+      - python3.11
+    Description: Select Python version for Lambda functions
+  SubnetIds:
+    Description: "Select the private subnets"
+    Type: "List<AWS::EC2::Subnet::Id>"
+  SecurityGroupIds:
+    Description: "Select security group"
+    Type: "List<AWS::EC2::SecurityGroup::Id>"
+Resources:
+    CodeBuildIAMRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            Path: "/service-role/"
+            AssumeRolePolicyDocument: "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"codebuild.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+            MaxSessionDuration: 3600
+            ManagedPolicyArns: 
+              - !Ref IAMPolicyForCodeBuild
+              - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
+              - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+              - "arn:aws:iam::aws:policy/AmazonOmicsFullAccess"
+
+    IAMPolicyForCodeBuild:
+        Type: "AWS::IAM::ManagedPolicy"
+        Properties:
+            Path: "/service-role/"
+            PolicyDocument: !Sub |
+                {
+                	"Version": "2012-10-17",
+                	"Statement": [
+                		{
+                			"Effect": "Allow",
+                			"Resource": "*",
+                			"Action": [
+                				"logs:CreateLogGroup",
+                				"logs:CreateLogStream",
+                				"logs:PutLogEvents"
+                			]
+                		},
+                		{
+                			"Effect": "Allow",
+                			"Resource": [
+                				"arn:${AWS::Partition}:s3:::codepipeline-${AWS::Region}-*"
+                			],
+                			"Action": [
+                				"s3:PutObject",
+                				"s3:GetObject",
+                				"s3:GetObjectVersion",
+                				"s3:GetBucketAcl",
+                				"s3:GetBucketLocation"
+                			]
+                		},
+                		{
+                			"Effect": "Allow",
+                			"Action": [
+                				"codebuild:CreateReportGroup",
+                				"codebuild:CreateReport",
+                				"codebuild:UpdateReport",
+                				"codebuild:BatchPutTestCases",
+                				"codebuild:BatchPutCodeCoverages"
+                			],
+                			"Resource": [
+                				"arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/${AWS::StackName}-*"
+                			]
+                		}
+                	]
+                }
+
+    CodePipelineIAMRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            Path: "/service-role/"
+            AssumeRolePolicyDocument: "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"codepipeline.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+            MaxSessionDuration: 3600
+            ManagedPolicyArns: 
+              - !Ref IAMPolicyForCodePipeline
+
+    IAMPolicyForCodePipeline:
+        Type: "AWS::IAM::ManagedPolicy"
+        Properties:
+            Path: "/service-role/"
+            PolicyDocument: |
+                {
+                    "Statement": [
+                        {
+                            "Action": [
+                                "iam:PassRole"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow",
+                            "Condition": {
+                                "StringEqualsIfExists": {
+                                    "iam:PassedToService": [
+                                        "cloudformation.amazonaws.com",
+                                        "elasticbeanstalk.amazonaws.com",
+                                        "ec2.amazonaws.com",
+                                        "ecs-tasks.amazonaws.com"
+                                    ]
+                                }
+                            }
+                        },
+                        {
+                            "Action": [
+                                "codecommit:CancelUploadArchive",
+                                "codecommit:GetBranch",
+                                "codecommit:GetCommit",
+                                "codecommit:GetRepository",
+                                "codecommit:GetUploadArchiveStatus",
+                                "codecommit:UploadArchive"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Action": [
+                                "codedeploy:CreateDeployment",
+                                "codedeploy:GetApplication",
+                                "codedeploy:GetApplicationRevision",
+                                "codedeploy:GetDeployment",
+                                "codedeploy:GetDeploymentConfig",
+                                "codedeploy:RegisterApplicationRevision"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Action": [
+                                "codestar-connections:UseConnection"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Action": [
+                                "elasticbeanstalk:*",
+                                "ec2:*",
+                                "elasticloadbalancing:*",
+                                "autoscaling:*",
+                                "cloudwatch:*",
+                                "s3:*",
+                                "sns:*",
+                                "cloudformation:*",
+                                "rds:*",
+                                "sqs:*",
+                                "ecs:*"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Action": [
+                                "lambda:InvokeFunction",
+                                "lambda:ListFunctions"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Action": [
+                                "opsworks:CreateDeployment",
+                                "opsworks:DescribeApps",
+                                "opsworks:DescribeCommands",
+                                "opsworks:DescribeDeployments",
+                                "opsworks:DescribeInstances",
+                                "opsworks:DescribeStacks",
+                                "opsworks:UpdateApp",
+                                "opsworks:UpdateStack"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Action": [
+                                "cloudformation:CreateStack",
+                                "cloudformation:DeleteStack",
+                                "cloudformation:DescribeStacks",
+                                "cloudformation:UpdateStack",
+                                "cloudformation:CreateChangeSet",
+                                "cloudformation:DeleteChangeSet",
+                                "cloudformation:DescribeChangeSet",
+                                "cloudformation:ExecuteChangeSet",
+                                "cloudformation:SetStackPolicy",
+                                "cloudformation:ValidateTemplate"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Action": [
+                                "codebuild:BatchGetBuilds",
+                                "codebuild:StartBuild",
+                                "codebuild:BatchGetBuildBatches",
+                                "codebuild:StartBuildBatch"
+                            ],
+                            "Resource": "*",
+                            "Effect": "Allow"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "devicefarm:ListProjects",
+                                "devicefarm:ListDevicePools",
+                                "devicefarm:GetRun",
+                                "devicefarm:GetUpload",
+                                "devicefarm:CreateUpload",
+                                "devicefarm:ScheduleRun"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "servicecatalog:ListProvisioningArtifacts",
+                                "servicecatalog:CreateProvisioningArtifact",
+                                "servicecatalog:DescribeProvisioningArtifact",
+                                "servicecatalog:DeleteProvisioningArtifact",
+                                "servicecatalog:UpdateProduct"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "cloudformation:ValidateTemplate"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "ecr:DescribeImages"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "states:DescribeExecution",
+                                "states:DescribeStateMachine",
+                                "states:StartExecution"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "appconfig:StartDeployment",
+                                "appconfig:StopDeployment",
+                                "appconfig:GetDeployment"
+                            ],
+                            "Resource": "*"
+                        }
+                    ],
+                    "Version": "2012-10-17"
+                }
+
+
+    NotificationLambdaIAMRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            Path: "/"
+            AssumeRolePolicyDocument: "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+            MaxSessionDuration: 3600
+            ManagedPolicyArns: 
+              - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              - !Ref NotificationLambdaIAMPolicy
+            Description: "Allows Lambda functions to call AWS services on your behalf."
+
+    NotificationLambdaIAMPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+            PolicyDocument: !Sub |
+                {
+                	"Version": "2012-10-17",
+                	"Statement": [
+                		{
+                			"Effect": "Allow",
+                			"Resource": [
+                        "arn:${AWS::Partition}:s3:::${AWS::StackName}*"
+                      ],
+                			"Action": [
+                				"s3:ListBucket",
+                				"s3:GetObject"
+                			]
+                		},
+                		{
+                			"Effect": "Allow",
+                			"Resource": [
+                				"arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}*"
+                			],
+                			"Action": [
+                				"sns:Publish",
+                				"sns:Subscribe"
+                			]
+                		},
+                		{
+                			"Effect": "Allow",
+                			"Action": [
+                				"codepipeline:PutJobSuccessResult",
+                				"codepipeline:PutJobFailureResult",
+                        "ec2:DescribeInstances",
+                        "ec2:CreateNetworkInterface",
+                        "ec2:AttachNetworkInterface",
+                        "ec2:DescribeNetworkInterfaces",
+                        "ec2:DeleteNetworkInterface"
+                			],
+                			"Resource": [
+                				"*"
+                			]
+                		}
+                	]
+                }
+
+    RepoGithubConnection:
+        Type: AWS::CodeStarConnections::Connection
+        Properties:
+            ConnectionName: !Sub ${AWS::StackName}-github
+            ProviderType: GitHub
+
+    OmicsContainersDependenciesPipeline:
+        Type: "AWS::CodePipeline::Pipeline"
+        Properties:
+            Name: !Sub "${AWS::StackName}-omics-containers-dependencies-pipeline"
+            RoleArn: !GetAtt CodePipelineIAMRole.Arn
+            ArtifactStore: 
+                Location: !Ref BuildArtifactsS3Bucket
+                Type: "S3"
+            PipelineType: V2
+            ExecutionMode: PARALLEL
+            Triggers:
+                -
+                  GitConfiguration: 
+                      SourceActionName: 'Source'
+                      Push: 
+                        - Branches: 
+                            Includes: 
+                              - !Sub "${RepoBranchName}"
+                          FilePaths: 
+                            Includes: 
+                              - !Sub "${HealthOmicsWorkflowName}/container-requirements.txt"
+                  ProviderType: "CodeStarSourceConnection"
+            Stages: 
+              - 
+                Name: "Source"
+                Actions: 
+                  - 
+                    Name: "Source"
+                    ActionTypeId: 
+                        Category: "Source"
+                        Owner: "AWS"
+                        Provider: "CodeStarSourceConnection"
+                        Version: "1"
+                    Configuration: 
+                        BranchName: !Ref RepoBranchName
+                        ConnectionArn: !Ref RepoGithubConnection
+                        DetectChanges: "false"
+                        FullRepositoryId: !Ref RepoName
+                        OutputArtifactFormat: "CODE_ZIP"
+                    OutputArtifacts: 
+                      - 
+                        Name: "SourceArtifact"
+                    Region: !Ref AWS::Region
+                    Namespace: "SourceVariables"
+                    RunOrder: 1
+              - 
+                Name: "Build"
+                Actions: 
+                  - 
+                    Name: "Build"
+                    ActionTypeId: 
+                        Category: "Build"
+                        Owner: "AWS"
+                        Provider: "CodeBuild"
+                        Version: "1"
+                    Configuration: 
+                        EnvironmentVariables: !Sub |
+                          [
+                            {
+                              "name": "REPOSITORY_URI",
+                              "type": "PLAINTEXT",
+                              "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
+                            },
+                            {
+                              "name": "REQUIREMENT_FILE_PATH",
+                              "type": "PLAINTEXT",
+                              "value": "/${HealthOmicsWorkflowName}/container-requirements.txt"
+                            },
+                            {
+                              "name": "CONTAINER_URI_PREFIX",
+                              "type": "PLAINTEXT",
+                              "value": "${AWS::StackName}/"
+                            },
+                            {
+                              "name": "SCAN_RESULTS_S3_BUCKET",
+                              "type": "PLAINTEXT",
+                              "value": "${BuildArtifactsS3Bucket}"
+                            },
+                            {
+                              "name": "CODEPIPELINE_EXECUTIONID",
+                              "type": "PLAINTEXT",
+                              "value": "#{codepipeline.PipelineExecutionId}"
+                            }
+                          ]
+                        ProjectName: !Ref PullContainersCodeBuild
+                    InputArtifacts: 
+                      - 
+                        Name: "SourceArtifact"
+                    OutputArtifacts: 
+                      - 
+                        Name: "BuildArtifact"
+                    Region: !Ref AWS::Region
+                    Namespace: "BuildVariables"
+                    RunOrder: 1
+              - 
+                Name: "Notify"
+                Actions: 
+                  - 
+                    Name: "SendScanResult"
+                    ActionTypeId: 
+                        Category: "Invoke"
+                        Owner: "AWS"
+                        Provider: "Lambda"
+                        Version: "1"
+                    Configuration: 
+                        FunctionName: !Ref SendScanResultsLambda
+                        UserParameters: "#{codepipeline.PipelineExecutionId}"
+                    InputArtifacts: 
+                      - 
+                        Name: "BuildArtifact"
+                    OutputArtifacts: 
+                      - 
+                        Name: "SendScanResultOutput"
+                    Region: !Ref AWS::Region
+                    RunOrder: 1
+              - 
+                Name: "Approval"
+                Actions: 
+                  - 
+                    Name: "OwnerApproval"
+                    ActionTypeId: 
+                        Category: "Approval"
+                        Owner: "AWS"
+                        Provider: "Manual"
+                        Version: "1"
+                    Configuration: {}
+                    Region: !Ref AWS::Region
+                    RunOrder: 1
+              - 
+                Name: "Deploy"
+                Actions: 
+                  -  
+                    Name: "Push"
+                    ActionTypeId: 
+                        Category: "Build"
+                        Owner: "AWS"
+                        Provider: "CodeBuild"
+                        Version: "1"
+                    Configuration: 
+                        EnvironmentVariables: !Sub |
+                          [
+                            {
+                              "name": "REPOSITORY_URI",
+                              "type": "PLAINTEXT",
+                              "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
+                            },
+                            {
+                              "name": "REQUIREMENT_FILE_PATH",
+                              "type": "PLAINTEXT",
+                              "value": "/${HealthOmicsWorkflowName}/container-requirements.txt"
+                            },
+                            {
+                              "name": "CONTAINER_URI_PREFIX",
+                              "type": "PLAINTEXT",
+                              "value": "${AWS::StackName}/"
+                            }
+                          ]
+                        ProjectName: !Ref PromoteContainerCodeBuild
+                    InputArtifacts: 
+                      - 
+                        Name: "BuildArtifact"
+                    Region: !Ref AWS::Region
+                    RunOrder: 1
+
+    HealthOmicsPrivateWorkflowPipeline:
+        Type: "AWS::CodePipeline::Pipeline"
+        Properties:
+            Name: !Sub "${AWS::StackName}-private-workflow-pipeline"
+            RoleArn: !GetAtt CodePipelineIAMRole.Arn
+            ArtifactStore: 
+                Location: !Ref BuildArtifactsS3Bucket
+                Type: "S3"
+            PipelineType: V2
+            ExecutionMode: PARALLEL
+            Triggers:
+                -
+                  GitConfiguration: 
+                      SourceActionName: 'Source'
+                      Push: 
+                        - Branches: 
+                            Includes: 
+                              - !Sub "${RepoBranchName}"
+                          FilePaths: 
+                            Includes: 
+                              - !Sub "${HealthOmicsWorkflowName}/${WorkflowFileName}"
+                              - !Sub "${HealthOmicsWorkflowName}/${WorkflowParameterFileName}"
+                  ProviderType: "CodeStarSourceConnection"
+            Stages: 
+              - 
+                Name: "Source"
+                Actions: 
+                  - 
+                    Name: "Source"
+                    ActionTypeId: 
+                        Category: "Source"
+                        Owner: "AWS"
+                        Provider: "CodeStarSourceConnection"
+                        Version: "1"
+                    Configuration: 
+                        BranchName: !Ref RepoBranchName
+                        ConnectionArn: !Ref RepoGithubConnection
+                        DetectChanges: "false"
+                        FullRepositoryId: !Ref RepoName
+                        OutputArtifactFormat: "CODE_ZIP"
+                    OutputArtifacts: 
+                      - 
+                        Name: "SourceArtifact"
+                    Region: !Ref AWS::Region
+                    Namespace: "SourceVariables"
+                    RunOrder: 1
+              - 
+                Name: "DeployOmicsWorkflow"
+                Actions: 
+                  - 
+                    Name: "CreateOrUpdateOmicsWorkflow"
+                    ActionTypeId: 
+                        Category: "Build"
+                        Owner: "AWS"
+                        Provider: "CodeBuild"
+                        Version: "1"
+                    Configuration: 
+                        EnvironmentVariables: !Sub |
+                          [
+                            {
+                              "name": "WORKFLOW_FOLDER_PATH",
+                              "type": "PLAINTEXT",
+                              "value": "${HealthOmicsWorkflowName}"
+                            },
+                            {
+                              "name": "WORKFLOW_NAME",
+                              "type": "PLAINTEXT",
+                              "value": "${HealthOmicsWorkflowName}"
+                            },
+                            {
+                              "name": "WORKFLOW_ARTIFACTS_S3_BUCKET",
+                              "type": "PLAINTEXT",
+                              "value": "${BuildArtifactsS3Bucket}"
+                            }
+                          ]
+                        ProjectName: !Ref HealthOmicsPrivateWorkflowCodeBuild
+                    InputArtifacts: 
+                      - 
+                        Name: "SourceArtifact"
+                    Region: !Ref AWS::Region
+                    RunOrder: 1
+
+    PromoteContainerCodeBuild:
+        Type: "AWS::CodeBuild::Project"
+        Properties:
+            Name: !Sub "${AWS::StackName}-promote-tag-codebuild"
+            Source: 
+                BuildSpec: |
+                    version: 0.2
+                    
+                    phases:
+                      pre_build:
+                        commands:
+                          - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $REPOSITORY_URI
+                      build:
+                        commands:
+                          - ls -l
+                          - current_date=$(date +"%Y.%m.%d")
+                          - cat .${REQUIREMENT_FILE_PATH} | while read container || [ -n "$container" ];
+                            do
+                              echo "docker pull ${container}";
+                              REPO_NAME=${CONTAINER_URI_PREFIX}${container%%:*};
+                              CONTAINER_NAME=${container%%:*};
+                              PACKAGE_NAME=${container##*/};
+                              docker pull ${container};
+                              aws ecr describe-repositories --repository-names ${REPO_NAME} || aws ecr create-repository --repository-name ${REPO_NAME} --image-scanning-configuration scanOnPush=true;
+                              echo "docker tag ${CONTAINER_NAME} ${REPOSITORY_URI}/${REPO_NAME}:staging";
+                              docker tag ${container} ${REPOSITORY_URI}/${REPO_NAME}:latest;
+                              docker push ${REPOSITORY_URI}/${REPO_NAME}:latest;
+                              docker tag ${container} ${REPOSITORY_URI}/${REPO_NAME}:${current_date};
+                              docker push ${REPOSITORY_URI}/${REPO_NAME}:${current_date};
+                            done
+                InsecureSsl: false
+                Type: "CODEPIPELINE"
+            Artifacts: 
+                EncryptionDisabled: false
+                Name: !Sub "${AWS::StackName}-promote-tag-codebuild"
+                Packaging: "NONE"
+                Type: "CODEPIPELINE"
+            Cache: 
+                Type: "NO_CACHE"
+            Environment: 
+                ComputeType: "BUILD_GENERAL1_SMALL"
+                Image: "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+                ImagePullCredentialsType: "CODEBUILD"
+                PrivilegedMode: false
+                Type: "LINUX_CONTAINER"
+            ServiceRole: !GetAtt CodeBuildIAMRole.Arn
+            TimeoutInMinutes: 60
+            QueuedTimeoutInMinutes: 480
+            EncryptionKey: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"
+            BadgeEnabled: false
+            LogsConfig: 
+                CloudWatchLogs: 
+                    Status: "ENABLED"
+                S3Logs: 
+                    Status: "DISABLED"
+                    EncryptionDisabled: false
+            Visibility: "PRIVATE"
+
+    PullContainersCodeBuild:
+        Type: "AWS::CodeBuild::Project"
+        Properties:
+            Name: !Sub "${AWS::StackName}-omics-containers-dependencies"
+            Source: 
+                BuildSpec: |
+                    version: 0.2
+                    env:
+                      shell: bash
+                    phases:
+                      pre_build:
+                        commands:
+                          - apt-get install wget apt-transport-https gnupg
+                          - wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add -
+                          - echo deb https://aquasecurity.github.io/trivy-repo/deb bionic main | tee -a /etc/apt/sources.list.d/trivy.list
+                          - apt-get update
+                          - apt-get install -y trivy
+                      build:
+                        commands:
+                          - EXECUTIONID=$(echo ${CODEPIPELINE_EXECUTIONID} | cut -c 1-8)
+                          - ls -l
+                          - cat .${REQUIREMENT_FILE_PATH} | while read container || [ -n "$container" ];
+                            do
+                                echo "docker pull ${container}";
+                                REPO_NAME=${CONTAINER_URI_PREFIX}${container%%:*};
+                                CONTAINER_NAME=${container%%:*};
+                                PACKAGE_NAME=${container##*/};
+                                echo ${CONTAINER_NAME};
+                                echo ${PACKAGE_NAME};
+                                docker pull ${container};
+                                echo "trivy image -f json -o scanresults-${PACKAGE_NAME}.json --no-progress --scanners vuln --timeout 15m -s 'HIGH,CRITICAL' ${REPOSITORY_URI}/${REPO_NAME}:staging";
+                                trivy image -f json -o scanresults-${PACKAGE_NAME}.json --no-progress --scanners vuln --timeout 15m -s 'HIGH,CRITICAL' ${container};
+                                echo "aws s3 cp scanresults-${PACKAGE_NAME}.json s3://${SCAN_RESULTS_S3_BUCKET}/${EXECUTIONID}/results-${CONTAINER_NAME}.json;";
+                                aws s3 cp scanresults-${PACKAGE_NAME}.json s3://${SCAN_RESULTS_S3_BUCKET}/${EXECUTIONID}/results-${PACKAGE_NAME}.json;
+                            done
+                    artifacts:
+                      files:
+                        - .${REQUIREMENT_FILE_PATH}
+                    
+                InsecureSsl: false
+                Type: "CODEPIPELINE"
+            Artifacts: 
+                EncryptionDisabled: false
+                Name: !Sub "${AWS::StackName}-omics-containers-dependencies"
+                Packaging: "NONE"
+                Type: "CODEPIPELINE"
+            Cache: 
+                Type: "NO_CACHE"
+            Environment: 
+                ComputeType: "BUILD_GENERAL1_SMALL"
+                Image: "aws/codebuild/standard:7.0"
+                ImagePullCredentialsType: "CODEBUILD"
+                PrivilegedMode: false
+                Type: "LINUX_CONTAINER"
+            ServiceRole: !GetAtt CodeBuildIAMRole.Arn 
+            TimeoutInMinutes: 60
+            QueuedTimeoutInMinutes: 480
+            EncryptionKey: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"
+            BadgeEnabled: false
+            LogsConfig: 
+                CloudWatchLogs: 
+                    Status: "ENABLED"
+                S3Logs: 
+                    Status: "DISABLED"
+                    EncryptionDisabled: false
+            Visibility: "PRIVATE"
+
+    HealthOmicsPrivateWorkflowCodeBuild:
+        Type: "AWS::CodeBuild::Project"
+        Properties:
+            Name: !Sub "${AWS::StackName}-build-private-workflow"
+            Source: 
+                BuildSpec: |
+                    version: 0.2
+                    
+                    phases: 
+                      build:
+                        commands:
+                          - ls -l
+                          - WORKFLOW_S3_FILE_PATH=s3://${WORKFLOW_ARTIFACTS_S3_BUCKET}/${WORKFLOW_NAME}/workflow.zip
+                          - cd ${WORKFLOW_FOLDER_PATH}
+                          - time_stamp=$(date +%Y-%m-%d)
+                          - zip -9 -r "../workflow.zip" .
+                          - object_exists=$(aws s3api head-object --bucket ${WORKFLOW_ARTIFACTS_S3_BUCKET} --key ${WORKFLOW_NAME}/workflow.zip || true)
+                          - if [ -z "$object_exists" ]; then
+                              echo "No file to archive";
+                            else
+                              aws s3 cp ${WORKFLOW_S3_FILE_PATH} s3://${WORKFLOW_ARTIFACTS_S3_BUCKET}/${WORKFLOW_NAME}/archive/${time_stamp}/workflow.zip;
+                            fi
+                          - aws s3 cp ../workflow.zip ${WORKFLOW_S3_FILE_PATH}
+                          - echo "aws omics create-workflow --engine WDL --definition-uri ${WORKFLOW_S3_FILE_PATH} --name ${WORKFLOW_NAME} --parameter-template file://${WORKFLOW_FOLDER_PATH}/parameter-template.json"
+                          - aws omics create-workflow --engine WDL --definition-uri ${WORKFLOW_S3_FILE_PATH} --name ${WORKFLOW_NAME} --parameter-template file://parameter-template.json
+                    artifacts:
+                      files:
+                        - ../workflow.zip
+                InsecureSsl: false
+                Type: "NO_SOURCE"
+            Artifacts: 
+                Type: "NO_ARTIFACTS"
+            Cache: 
+                Type: "NO_CACHE"
+            Environment: 
+                ComputeType: "BUILD_GENERAL1_SMALL"
+                Image: "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+                ImagePullCredentialsType: "CODEBUILD"
+                PrivilegedMode: false
+                Type: "LINUX_CONTAINER"
+            ServiceRole: !GetAtt CodeBuildIAMRole.Arn
+            TimeoutInMinutes: 60
+            QueuedTimeoutInMinutes: 480
+            EncryptionKey: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"
+            BadgeEnabled: false
+            LogsConfig: 
+                CloudWatchLogs: 
+                    Status: "ENABLED"
+                S3Logs: 
+                    Status: "DISABLED"
+                    EncryptionDisabled: false
+            Visibility: "PRIVATE"
+    
+    SendScanResultsLambda:
+        Type: "AWS::Lambda::Function"
+        Properties:
+            Description: "Function to send scanned results to users"
+            Environment: 
+                Variables: 
+                    SNS_TOPIC_ARN: !Ref SNSTopic
+                    SCAN_RESULTS_S3_BUCKET: !Ref BuildArtifactsS3Bucket
+            FunctionName: !Sub "${AWS::StackName}-send-scan-results"
+            Handler: "index.lambda_handler"
+            ReservedConcurrentExecutions: 30
+            VpcConfig:
+                SubnetIds: !Split [',', !Join [',', !Ref SubnetIds]]
+                SecurityGroupIds: !Split [',', !Join [',', !Ref SecurityGroupIds]]
+            Architectures: 
+              - "x86_64"
+            Code: 
+              ZipFile: |
+                import json
+                import boto3
+                import os
+                code_pipeline = boto3.client('codepipeline')
+                sns_client = boto3.client('sns')
+                s3Bucket = os.environ['SCAN_RESULTS_S3_BUCKET']
+                
+                def lambda_handler(event, context):
+
+                    print(event)
+                    topic_arn = os.environ['SNS_TOPIC_ARN']
+                    executionID = event['CodePipeline.job']['data']['actionConfiguration']['configuration']['UserParameters']
+                    job_id = event['CodePipeline.job']['id']
+                    
+                    # loop through files within the s3 bucket based on s3Bucket variable and folder name is the first 8 characters of executionID variable
+                    s3 = boto3.resource('s3')
+                    bucket = s3.Bucket(s3Bucket)
+                    email_content = ''
+                    
+                    try:
+                        for obj in bucket.objects.filter(Prefix=executionID[:8]):
+                            # get the file content
+                            raw_data = json.loads(obj.get()['Body'].read().decode('utf-8'))
+                            email_content += 'Image Name: ' + raw_data['ArtifactName'] + '\n\n'
+
+                            # based on raw_data variable, create a list of vulnerabilities
+                            vulnerabilities = []
+                            
+                            if 'Results' in raw_data and len(raw_data['Results']) > 0 and 'Vulnerabilities' in raw_data['Results'][0]:
+                                for item in raw_data['Results'][0]['Vulnerabilities']:
+                                    vulnerabilities.append(item)
+                            
+                            if len(vulnerabilities) > 0:
+                                summary = update_severity_summary(vulnerabilities)
+                                summary_table = format_summary_as_table(summary)
+                                email_content += 'Scan findings: \n'
+                                email_content += summary_table + '\n\n'
+                            else:
+                                email_content += 'No vulnerabilities found.\n\n'
+                                
+                            email_content += '-----------\n\n'
+                        print(email_content)
+                    
+                        # send email using AWS SNS with email_content as the content of the email
+                        
+                        response = sns_client.publish(
+                            TargetArn=topic_arn,
+                            Message=email_content,
+                            Subject=f'#{executionID[:8]} Scan Results'
+                        )
+                        
+                        code_pipeline.put_job_success_result(jobId=job_id)
+                        
+                    except Exception as error:
+                        print("Exception:", error)
+                        code_pipeline.put_job_failure_result(jobId=job_id)
+                        
+
+                def update_severity_summary(vulnerabilities):
+                    """
+                    Update the severity summary dictionary based on the provided vulnerabilities.
+                    
+                    Args:
+                        vulnerabilities (list): A list of vulnerability dictionaries.
+                    
+                    Returns:
+                        dict: A dictionary containing the summary of vulnerabilities by severity.
+                    """
+                    summary = {}
+                    for vulnerability in vulnerabilities:
+                        severity = vulnerability.get('Severity')
+                        title = vulnerability.get('Title')
+                        status = vulnerability.get('Status')
+                        
+                        if severity:
+                            if severity not in summary:
+                                summary[severity] = {
+                                    'num': 1,
+                                    'listOfVulnerabilities': [{
+                                        'title': title,
+                                        'status': status
+                                    }]
+                                }
+                            else:
+                                summary[severity]['num'] += 1
+                                summary[severity]['listOfVulnerabilities'].append({
+                                    'title': title,
+                                    'status': status
+                                })
+                        else:
+                            print(f"Warning: 'Severity' key not found in vulnerability: {vulnerability}")
+                        
+
+                    return summary
+
+
+                def format_summary_as_table(summary):
+                    """
+                    Format the severity summary as a table-like string.
+                    
+                    Args:
+                        summary (dict): The severity summary dictionary.
+                    
+                    Returns:
+                        str: A formatted string representing the summary as a table.
+                    """
+                    table_lines = []
+                    
+                    for severity, data in summary.items():
+                        table_lines.append(f"Severity: {severity.title()} \n Count:{data['num']}")
+                    return "\n\n".join(table_lines)
+            MemorySize: 128
+            Role: !GetAtt NotificationLambdaIAMRole.Arn
+            Runtime: !Ref LambdaFunctionPythonVersion
+            Timeout: 180
+            TracingConfig: 
+                Mode: "PassThrough"
+            EphemeralStorage: 
+                Size: 512
+    
+    SNSTopic:
+        Type: "AWS::SNS::Topic"
+        Properties:
+            DisplayName: !Sub "${AWS::StackName}-notification-topic"
+            KmsMasterKeyId: "alias/aws/sns"
+            TopicName: !Sub "${AWS::StackName}-notification-topic"
+    
+    SNSTopicPolicy:
+        Type: "AWS::SNS::TopicPolicy"
+        Properties:
+            PolicyDocument: !Sub "{\"Version\":\"2008-10-17\",\"Id\":\"__default_policy_ID\",\"Statement\":[{\"Sid\":\"__default_statement_ID\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":[\"SNS:Publish\",\"SNS:RemovePermission\",\"SNS:SetTopicAttributes\",\"SNS:DeleteTopic\",\"SNS:ListSubscriptionsByTopic\",\"SNS:GetTopicAttributes\",\"SNS:AddPermission\",\"SNS:Subscribe\"],\"Resource\":\"${SNSTopic}\",\"Condition\":{\"StringEquals\":{\"AWS:SourceOwner\":\"${AWS::AccountId}\"}}}]}"
+            Topics: 
+              - !Ref SNSTopic
+    
+    SubscribeToSNSTopic:
+      Type: Custom::SubscribeToSNSTopic
+      Properties:
+        ServiceToken: !GetAtt SubscribeToSNSTopicLambdaFunction.Arn
+        EmailAddresses: !Ref NotificationEmailAddresses
+    
+    SubscribeToSNSTopicLambdaFunction:
+        Type: "AWS::Lambda::Function"
+        Properties:
+            Description: "Function to subscribe emailt o SNS topic"
+            Environment: 
+                Variables: 
+                    SNS_TOPIC_ARN: !Ref SNSTopic
+            FunctionName: !Sub "${AWS::StackName}-subscribe-to-sns-topic"
+            Handler: "index.lambda_handler"
+            ReservedConcurrentExecutions: 30
+            VpcConfig:
+                SubnetIds: !Split [',', !Join [',', !Ref SubnetIds]]
+                SecurityGroupIds: !Split [',', !Join [',', !Ref SecurityGroupIds]]
+            Architectures: 
+              - "x86_64"
+            Code:
+              ZipFile: |
+                import json
+                import boto3
+                import os
+
+                code_pipeline = boto3.client('codepipeline')
+                sns = boto3.client('sns')
+                s3 = boto3.resource('s3')
+
+                def lambda_handler(event, context):
+                    print(event)
+                    topic_arn = os.environ['SNS_TOPIC_ARN']
+                    email_addresses = event['ResourceProperties'].get('EmailAddresses', None)
+                    if email_addresses is not None:
+                        subscribe_to_sns(topic_arn, email_addresses.split(','))
+                        
+                    send(event, context, SUCCESS, {'message':'Success!'}, "CustomResourcePhysicalID")
+
+                def subscribe_to_sns(topic_arn, email_addresses):
+                    """
+                    Subscribes a list of email addresses to an SNS topic.
+                    
+                    Args:
+                        topic_arn (str): The Amazon Resource Name (ARN) of the SNS topic.
+                        email_addresses (list): A list of email addresses to subscribe.
+                    """
+                    
+                    for email_address in email_addresses:
+                        try:
+                            response = sns.subscribe(
+                                TopicArn=topic_arn,
+                                Protocol='email',
+                                Endpoint=email_address
+                            )
+                            print(f"Subscribed {email_address} to topic {topic_arn}")
+                        except Exception as e:
+                            print(f"Error subscribing {email_address} to topic {topic_arn}: {e}")
+
+
+                import urllib3
+                import json
+
+                SUCCESS = "SUCCESS"
+                FAILED = "FAILED"
+
+                http = urllib3.PoolManager()
+
+
+                def send(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False, reason=None):
+                    responseUrl = event['ResponseURL']
+
+                    print(responseUrl)
+
+                    responseBody = {
+                        'Status' : responseStatus,
+                        'Reason' : reason or "See the details in CloudWatch Log Stream: {}".format(context.log_stream_name),
+                        'PhysicalResourceId' : physicalResourceId or context.log_stream_name,
+                        'StackId' : event['StackId'],
+                        'RequestId' : event['RequestId'],
+                        'LogicalResourceId' : event['LogicalResourceId'],
+                        'NoEcho' : noEcho,
+                        'Data' : responseData
+                    }
+
+                    json_responseBody = json.dumps(responseBody)
+
+                    print("Response body:")
+                    print(json_responseBody)
+
+                    headers = {
+                        'content-type' : '',
+                        'content-length' : str(len(json_responseBody))
+                    }
+
+                    try:
+                        response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)
+                        print("Status code:", response.status)
+
+                    except Exception as e:
+                        print("send(..) failed executing http.request(..):", e)
+            MemorySize: 128
+            Role: !GetAtt NotificationLambdaIAMRole.Arn
+            Runtime: !Ref LambdaFunctionPythonVersion
+            Timeout: 180
+            TracingConfig: 
+                Mode: "PassThrough"
+            EphemeralStorage: 
+                Size: 512
+        
+    BuildArtifactsS3Bucket:
+        Type: "AWS::S3::Bucket"
+        Properties:
+            BucketName: !Sub "${AWS::StackName}-artifacts"
+            BucketEncryption: 
+                ServerSideEncryptionConfiguration: 
+                  - 
+                    ServerSideEncryptionByDefault: 
+                        SSEAlgorithm: "AES256"
+                    BucketKeyEnabled: true
+            OwnershipControls: 
+                Rules: 
+                  - 
+                    ObjectOwnership: "BucketOwnerEnforced"
+            VersioningConfiguration:
+                Status: Enabled
+            PublicAccessBlockConfiguration: 
+                BlockPublicAcls: true
+                BlockPublicPolicy: true
+                IgnorePublicAcls: true
+                RestrictPublicBuckets: true
+    S3BucketPolicy:
+        Type: AWS::S3::BucketPolicy
+        Properties:
+            Bucket: !Ref BuildArtifactsS3Bucket
+            PolicyDocument:
+                Version: "2012-10-17"
+                Id: "AccessControl"
+                Statement:
+                    - Effect: "Deny"
+                      Principal: "*"
+                      Action: "s3:*"
+                      Resource:
+                          - !Sub "arn:aws:s3:::${AWS::StackName}-artifacts/*"
+                          - !Sub "arn:aws:s3:::${AWS::StackName}-artifacts"
+                      Condition:
+                          Bool:
+                              aws:SecureTransport: false
+
+Outputs:
+  OmicsContainersDependenciesPipelineName:
+    Description: The name of the CodePipeline for pulling containers based on containers requirement
+    Value: !Ref OmicsContainersDependenciesPipeline
+    Export:
+      Name: !Sub ${AWS::StackName}-OmicsContainersDependenciesPipelineName
+
+  HealthOmicsPrivateWorkflowPipeline:
+    Description: The name of the CodePipeline for create private workflow in HealthOmics
+    Value: !Ref HealthOmicsPrivateWorkflowPipeline
+    Export:
+      Name: !Sub ${AWS::StackName}-HealthOmicsPrivateWorkflowPipeline
+
+  OmicsContainersDependenciesBuildProjectName:
+    Description: The name of the CodeBuild project for containers requirement
+    Value: !Ref PullContainersCodeBuild
+    Export:
+      Name: !Sub ${AWS::StackName}-PullContainersCodeBuild
+
+  HealthOmicsPrivateWorkflowBuildProjectName:
+    Description: The name of the CodeBuild project for HealthOmics private workflow
+    Value: !Ref HealthOmicsPrivateWorkflowCodeBuild
+    Export:
+      Name: !Sub ${AWS::StackName}-HealthOmicsPrivateWorkflowCodeBuild
+
+  SNSTopicArn:
+    Description: The ARN of the SNS topic created
+    Value: !Ref SNSTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-SNSTopicArn
