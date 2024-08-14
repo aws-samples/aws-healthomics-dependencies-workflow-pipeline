@@ -12,7 +12,12 @@ Within HealthOmics Workflows, users can leverage two types of workflows: Ready2R
 
 However, creating a private workflow in HealthOmics requires a few pre-requisites, including:
 1. **Pulling and Pushing Containers to Amazon ECR**: Users must first pull the necessary container images from public or private sources, and then push them to their own Amazon Elastic Container Registry (ECR) repository.
-2. **Uploading Workflow Files to Amazon S3**: Users must also upload their workflow definition files (e.g., Nextflow, CWL, or WDL) to an Amazon S3 bucket before they can create the private workflow in HealthOmics.
+2. **Uploading Workflow Files to Amazon S3**: If the user would like to have version control for the workflow definition or if the workflow definition file is large, it is common to upload the workflow definition files (e.g., Nextflow, CWL, or WDL) to an Amazon S3 bucket before creating the workflow in HealthOmics. However, if the workflow definition file is not too large, it can also be directly included in the create-workflow API call, without the need to upload it to S3 first.
+
+
+While users can upload their workflow definition files (e.g., Nextflow, CWL, or WDL) to an Amazon S3 bucket before creating the private workflow in HealthOmics, this is not a mandatory requirement. The workflow definition file, if not too large, can be directly included in the create-workflow API call."
+
+
 
 To streamline this process, the code provided in this repository automates these two pre-requisites, making it easier for users to set up their private workflows in HealthOmics, and allow users to have version controls for each workflow. The code will create two pipelines in AWS CodePipeline:
 1. **Workflow Dependencies Pipeline**
